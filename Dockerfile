@@ -1,66 +1,81 @@
-FROM alpine:3.4
-# In case the main package repositories are down, use the alternative base image:
-# FROM gliderlabs/alpine:3.4
+# Build this image:  docker build -t mpi .
+#
 
-MAINTAINER David Li <davidli012345@.gmail.com>
+FROM ubuntu:18.04
+# FROM phusion/baseimage
 
-ARG REQUIRE="sudo build-base"
-RUN apk update && apk upgrade \
-      && apk add --no-cache ${REQUIRE}
+MAINTAINER David Li <davidli012345@gmail.com>
 
+ENV USER mpirun
 
-#### INSTALL MPICH ####
-# Source is available at http://www.mpich.org/static/downloads/
-
-# Build Options:
-# See installation guide of target MPICH version
-# Ex: http://www.mpich.org/static/downloads/3.2/mpich-3.2-installguide.pdf
-# These options are passed to the steps below
-ARG MPICH_VERSION="3.2"
-ARG MPICH_CONFIGURE_OPTIONS="--disable-fortran"
-ARG MPICH_MAKE_OPTIONS
-
-# Download, build, and install MPICH
-RUN mkdir /tmp/mpich-src
-WORKDIR /tmp/mpich-src
-RUN wget http://www.mpich.org/static/downloads/${MPICH_VERSION}/mpich-${MPICH_VERSION}.tar.gz \
-      && tar xfz mpich-${MPICH_VERSION}.tar.gz  \
-      && cd mpich-${MPICH_VERSION}  \
-      && ./configure ${MPICH_CONFIGURE_OPTIONS}  \
-      && make ${MPICH_MAKE_OPTIONS} && make install \
-      && rm -rf /tmp/mpich-src
+ENV DEBIAN_FRONTEND=noninteractive \
+    HOME=/home/${USER} 
 
 
-#### TEST MPICH INSTALLATION ####
-RUN mkdir /tmp/mpich-test
-WORKDIR /tmp/mpich-test
-COPY mpich-test .
-RUN sh test.sh
-RUN rm -rf /tmp/mpich-test
+RUN apt-get update -y && \
+    apt-get install -y --no-install-recommends sudo apt-utils && \
+    apt-get install -y --no-install-recommends openssh-server \
+        python-dev python-numpy python-pip python-virtualenv python-scipy \
+        gcc gfortran libopenmpi-dev openmpi-bin openmpi-common openmpi-doc binutils && \
+    apt-get clean && apt-get purge && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
+RUN mkdir /var/run/sshd
+RUN echo 'root:${USER}' | chpasswd
+RUN sed -i 's/PermitRootLogin without-password/PermitRootLogin yes/' /etc/ssh/sshd_config
 
-#### CLEAN UP ####
-WORKDIR /
-RUN rm -rf /tmp/*
+# SSH login fix. Otherwise user is kicked off after login
+RUN sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd
 
+ENV NOTVISIBLE "in users profile"
+RUN echo "export VISIBLE=now" >> /etc/profile
 
-#### ADD DEFAULT USER ####
-ARG USER=mpi
-ENV USER ${USER}
-RUN adduser -D ${USER} \
-      && echo "${USER}   ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
+# ------------------------------------------------------------
+# Add an 'mpirun' user
+# ------------------------------------------------------------
 
-ENV USER_HOME /home/${USER}
-RUN chown -R ${USER}:${USER} ${USER_HOME}
+RUN adduser --disabled-password --gecos "" ${USER} && \
+    echo "${USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
-#### CREATE WORKING DIRECTORY FOR USER ####
-ARG WORKDIR=/project
-ENV WORKDIR ${WORKDIR}
-RUN mkdir ${WORKDIR}
-RUN chown -R ${USER}:${USER} ${WORKDIR}
+# ------------------------------------------------------------
+# Set-Up SSH with our Github deploy key
+# ------------------------------------------------------------
 
-WORKDIR ${WORKDIR}
+ENV SSHDIR ${HOME}/.ssh/
+
+RUN mkdir -p ${SSHDIR}
+
+ADD ssh/config ${SSHDIR}/config
+ADD ssh/id_rsa.mpi ${SSHDIR}/id_rsa
+ADD ssh/id_rsa.mpi.pub ${SSHDIR}/id_rsa.pub
+ADD ssh/id_rsa.mpi.pub ${SSHDIR}/authorized_keys
+
+RUN chmod -R 600 ${SSHDIR}* && \
+    chown -R ${USER}:${USER} ${SSHDIR}
+
+RUN pip install --upgrade pip
+
 USER ${USER}
+RUN  pip install --user -U setuptools \
+    && pip install --user mpi4py
 
+# ------------------------------------------------------------
+# Configure OpenMPI
+# ------------------------------------------------------------
 
-CMD ["/bin/ash"]
+USER root
+
+RUN rm -fr ${HOME}/.openmpi && mkdir -p ${HOME}/.openmpi
+ADD default-mca-params.conf ${HOME}/.openmpi/mca-params.conf
+RUN chown -R ${USER}:${USER} ${HOME}/.openmpi
+
+# ------------------------------------------------------------
+# Copy MPI4PY example scripts
+# ------------------------------------------------------------
+
+ENV TRIGGER 1
+
+ADD mpi4py_benchmarks ${HOME}/mpi4py_benchmarks
+RUN chown -R ${USER}:${USER} ${HOME}/mpi4py_benchmarks
+
+EXPOSE 22
+CMD ["/usr/sbin/sshd", "-D"]
