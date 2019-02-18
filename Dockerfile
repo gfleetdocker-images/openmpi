@@ -1,10 +1,8 @@
 # Build this image:  docker build -t mpi .
-#
-
+# MAINTAINER David Li <davidli012345@gmail.com>
 FROM ubuntu:18.04
 # FROM phusion/baseimage
 
-MAINTAINER David Li <davidli012345@gmail.com>
 
 ENV USER mpirun
 
